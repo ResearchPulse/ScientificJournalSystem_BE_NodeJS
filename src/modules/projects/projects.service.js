@@ -65,14 +65,17 @@ export const getProjectStats = async (projectId, subjectAreaId) => {
  * @param {string} userId
  * @returns {Promise<Array>}
  */
-export const getUserProjects = async (userId) => {
-  const cacheKey = `project:user-list:${userId}`;
+export const getUserProjects = async (userId, includeDeleted = false) => {
+  const cacheKey = `project:user-list:${userId}${includeDeleted ? ':all' : ''}`;
   const cached = await cacheService.get(cacheKey);
   if (cached) return cached;
+
+  const statusFilter = includeDeleted ? '' : `AND p.status != 'DELETED'`;
 
   const result = await pool.query(
     `SELECT 
        p.project_id, 
+       p.user_id,
        p.title, 
        p.title as project_name, 
        sa.display_name as subject_area, 
@@ -107,7 +110,8 @@ export const getUserProjects = async (userId) => {
        WHERE pm2.project_id = p.project_id
      ) members_data ON true
      LEFT JOIN "Subject_Area" sa ON sa.subject_area_id = p.subject_area
-     WHERE p.user_id = $1 OR pm.project_id IS NOT NULL
+     WHERE (p.user_id = $1 OR pm.project_id IS NOT NULL)
+       ${statusFilter}
      ORDER BY p.created_at DESC`,
     [userId]
   );
@@ -381,11 +385,18 @@ export const createProject = async ({ userId, title, subject_area, subject_categ
 export const updateProject = async (projectId, userId, { title, subject_area, subject_category_ids, journal_ids }) => {
   // 1. Kiểm tra xem project có tồn tại và thuộc sở hữu của user không
   const projectCheck = await pool.query(
-    `SELECT 1 FROM "Project" WHERE project_id = $1 AND user_id = $2`,
+    `SELECT status FROM "Project" WHERE project_id = $1 AND user_id = $2`,
     [projectId, userId]
   );
   if (projectCheck.rows.length === 0) {
     return null;
+  }
+
+  if (projectCheck.rows[0].status === 'DELETED') {
+    const err = new Error("Không thể cập nhật dự án đã bị xóa.");
+    err.statusCode = 400;
+    err.code = "PROJECT_ALREADY_DELETED";
+    throw err;
   }
 
   // 2. Kiểm tra sự tồn tại của subject_area nếu được truyền vào
@@ -479,38 +490,76 @@ export const updateProject = async (projectId, userId, { title, subject_area, su
 };
 
 /**
- * Xóa một project
+ * Xóa mềm một project (chỉ chủ sở hữu mới có quyền xóa)
  * @param {string|number} projectId
  * @param {string} userId
- * @returns {Promise<boolean>}
+ * @returns {Promise<string>} Trạng thái trước khi xóa mềm (để ghi log)
  */
 export const deleteProject = async (projectId, userId) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // 1. Kiểm tra xem project có tồn tại và thuộc sở hữu của user hay không (chỉ owner mới được xóa)
-    const checkResult = await client.query(
-      `SELECT status FROM "Project" WHERE project_id = $1 AND user_id = $2`,
-      [projectId, userId]
+    // 1. Kiểm tra xem project có tồn tại không
+    const existCheck = await client.query(
+      `SELECT user_id, status FROM "Project" WHERE project_id = $1`,
+      [projectId]
     );
-    if (checkResult.rows.length === 0) {
+    if (existCheck.rows.length === 0) {
       await client.query('ROLLBACK');
-      return false;
+      const err = new Error("Không tìm thấy dự án.");
+      err.statusCode = 404;
+      err.code = "PROJECT_NOT_FOUND";
+      throw err;
     }
 
-    const previousStatus = checkResult.rows[0].status;
+    const project = existCheck.rows[0];
 
-    // 2. Cập nhật status thành DELETED thay vì xóa bản ghi
+    // 2. Kiểm tra quyền sở hữu (chỉ owner mới được xóa)
+    if (String(project.user_id) !== String(userId)) {
+      await client.query('ROLLBACK');
+      const err = new Error("Bạn không có quyền xóa dự án này (chỉ chủ sở hữu mới có quyền xóa).");
+      err.statusCode = 403;
+      err.code = "FORBIDDEN";
+      throw err;
+    }
+
+    // 3. Kiểm tra nếu dự án đã bị xóa mềm trước đó
+    if (project.status === 'DELETED') {
+      await client.query('ROLLBACK');
+      const err = new Error("Dự án này đã bị xóa trước đó.");
+      err.statusCode = 400;
+      err.code = "PROJECT_ALREADY_DELETED";
+      throw err;
+    }
+
+    const previousStatus = project.status;
+
+    // 4. Cập nhật status thành DELETED thay vì xóa bản ghi (Xóa mềm)
     await client.query(
       `UPDATE "Project" SET status = 'DELETED' WHERE project_id = $1 AND user_id = $2`,
       [projectId, userId]
     );
 
+    // Lấy danh sách thành viên để xóa cache của họ nữa
+    const membersRes = await client.query(
+      `SELECT user_id FROM "Project_Member" WHERE project_id = $1 AND status = 'ACCEPTED'`,
+      [projectId]
+    );
+
     await client.query('COMMIT');
+
+    // Xóa cache của chủ sở hữu và thành viên
     await cacheService.del(`project:user-list:${userId}`);
+    await cacheService.del(`project:user-list:${userId}:all`);
+    for (const member of membersRes.rows) {
+      await cacheService.del(`project:user-list:${member.user_id}`);
+      await cacheService.del(`project:user-list:${member.user_id}:all`);
+    }
     await cacheService.del(`project:overview:${projectId}`);
     await cacheService.del(`project:stats:${projectId}`);
+    await cacheService.del(`project:${projectId}:analytics`);
+
     return previousStatus; // Trả về status cũ để lưu vào log
   } catch (error) {
     await client.query('ROLLBACK');
@@ -532,22 +581,37 @@ export const restoreProject = async (projectId, userId) => {
     await client.query('BEGIN');
 
     const checkResult = await client.query(
-      `SELECT status FROM "Project" WHERE project_id = $1 AND user_id = $2`,
-      [projectId, userId]
+      `SELECT user_id, status FROM "Project" WHERE project_id = $1`,
+      [projectId]
     );
     if (checkResult.rows.length === 0) {
       await client.query('ROLLBACK');
-      throw new Error("Dự án không tồn tại hoặc bạn không phải là OWNER.");
+      const err = new Error("Không tìm thấy dự án.");
+      err.statusCode = 404;
+      err.code = "PROJECT_NOT_FOUND";
+      throw err;
     }
 
-    if (checkResult.rows[0].status !== 'DELETED') {
+    const project = checkResult.rows[0];
+    if (String(project.user_id) !== String(userId)) {
       await client.query('ROLLBACK');
-      throw new Error("Dự án không ở trạng thái đã xóa.");
+      const err = new Error("Bạn không có quyền khôi phục dự án này (chỉ chủ sở hữu mới có quyền khôi phục).");
+      err.statusCode = 403;
+      err.code = "FORBIDDEN";
+      throw err;
     }
 
-    // Lấy trạng thái trước đó từ bảng system_log
+    if (project.status !== 'DELETED') {
+      await client.query('ROLLBACK');
+      const err = new Error("Dự án không ở trạng thái đã xóa.");
+      err.statusCode = 400;
+      err.code = "PROJECT_NOT_DELETED";
+      throw err;
+    }
+
+    // Lấy trạng thái trước đó từ bảng System_Log
     const logResult = await client.query(
-      `SELECT old_data FROM system_log 
+      `SELECT old_data FROM "System_Log" 
        WHERE entity_table = 'Project' AND entity_id = $1 AND action = 'DELETE' 
        ORDER BY created_at DESC LIMIT 1`,
       [String(projectId)]
@@ -563,10 +627,24 @@ export const restoreProject = async (projectId, userId) => {
       [previousStatus, projectId, userId]
     );
 
+    // Lấy danh sách thành viên để xóa cache của họ nữa
+    const membersRes = await client.query(
+      `SELECT user_id FROM "Project_Member" WHERE project_id = $1 AND status = 'ACCEPTED'`,
+      [projectId]
+    );
+
     await client.query('COMMIT');
+
     await cacheService.del(`project:user-list:${userId}`);
+    await cacheService.del(`project:user-list:${userId}:all`);
+    for (const member of membersRes.rows) {
+      await cacheService.del(`project:user-list:${member.user_id}`);
+      await cacheService.del(`project:user-list:${member.user_id}:all`);
+    }
     await cacheService.del(`project:overview:${projectId}`);
     await cacheService.del(`project:stats:${projectId}`);
+    await cacheService.del(`project:${projectId}:analytics`);
+
     return previousStatus;
   } catch (error) {
     await client.query('ROLLBACK');

@@ -17,7 +17,8 @@ export const projectServiceRef = { ...projectService };
 export const getProjects = async (req, res) => {
   try {
     const userId = req.user.user_id;
-    const projects = await projectServiceRef.getUserProjects(userId);
+    const includeDeleted = req.query?.includeDeleted === 'true' || req.query?.status === 'ALL';
+    const projects = await projectServiceRef.getUserProjects(userId, includeDeleted);
 
     return res.code(200).send({
       success: true,
@@ -218,6 +219,14 @@ export const updateProject = async (req, res) => {
       message: "Cập nhật dự án thành công",
     });
   } catch (error) {
+    if (error.statusCode) {
+      return res.code(error.statusCode).send({
+        success: false,
+        code: error.code || "UPDATE_PROJECT_FAILED",
+        message: error.message,
+      });
+    }
+
     if (
       error.message &&
       (error.message.includes("không tồn tại") ||
@@ -240,13 +249,13 @@ export const updateProject = async (req, res) => {
 };
 
 /**
- * API Xóa dự án khoa học và các mối quan hệ liên kết liên quan
- * @param {Object} req - Express request object
+ * API Xóa dự án khoa học (xóa mềm - cập nhật trạng thái thành DELETED)
+ * @param {Object} req - Fastify request object
  * @param {Object} req.params - Các tham số trên URL
  * @param {string} req.params.id - ID của dự án cần xóa
  * @param {Object} req.user - Thông tin người dùng đã xác thực
  * @param {string} req.user.user_id - ID người dùng
- * @param {Object} res - Express response object
+ * @param {Object} res - Fastify reply object
  * @returns {Promise<Object>} JSON response thông báo kết quả xóa dự án
  */
 export const deleteProject = async (req, res) => {
@@ -255,13 +264,6 @@ export const deleteProject = async (req, res) => {
     const userId = req.user.user_id;
 
     const previousStatus = await projectServiceRef.deleteProject(projectId, userId);
-    if (!previousStatus) {
-      return res.code(404).send({
-        success: false,
-        code: "PROJECT_NOT_FOUND_OR_ACCESS_DENIED",
-        message: "Không tìm thấy dự án hoặc bạn không có quyền xóa dự án này",
-      });
-    }
 
     createLog({
       userId: userId,
@@ -283,17 +285,31 @@ export const deleteProject = async (req, res) => {
       message: "Xóa dự án thành công",
     });
   } catch (error) {
+    if (error.statusCode) {
+      return res.code(error.statusCode).send({
+        success: false,
+        code: error.code || "DELETE_PROJECT_FAILED",
+        message: error.message,
+      });
+    }
     logger.error("[Project Controller] Lỗi khi xóa dự án:", error);
     return res.code(500).send({
       success: false,
       code: "INTERNAL_SERVER_ERROR",
-      message: "Có lỗi xảy ra ở server khi xóa dự án",
+      message: error.message || "Có lỗi xảy ra ở server khi xóa dự án",
     });
   }
 };
 
 /**
  * Khôi phục dự án đã bị xóa mềm
+ * @param {Object} req - Fastify request object
+ * @param {Object} req.params - Các tham số trên URL
+ * @param {string} req.params.id - ID của dự án cần khôi phục
+ * @param {Object} req.user - Thông tin người dùng đã xác thực
+ * @param {string} req.user.user_id - ID người dùng
+ * @param {Object} res - Fastify reply object
+ * @returns {Promise<Object>} JSON response thông báo kết quả khôi phục dự án
  */
 export const restoreProject = async (req, res) => {
   try {
@@ -305,7 +321,7 @@ export const restoreProject = async (req, res) => {
     createLog({
       userId: userId,
       userRole: req.user.role,
-      action: 'UPDATE', // Hoặc 'RESTORE' nếu hệ thống có action RESTORE
+      action: 'UPDATE',
       entityTable: 'Project',
       entityId: projectId,
       message: `Khôi phục dự án nghiên cứu có ID: ${projectId}`,
@@ -323,21 +339,18 @@ export const restoreProject = async (req, res) => {
       data: { status: restoredStatus }
     });
   } catch (error) {
-    logger.error("[Project Controller] Lỗi khi khôi phục dự án:", error);
-    
-    if (error.message.includes('không tồn tại') || error.message.includes('không ở trạng thái đã xóa')) {
-      return res.code(400).send({
+    if (error.statusCode) {
+      return res.code(error.statusCode).send({
         success: false,
-        code: "INVALID_RESTORE_REQUEST",
+        code: error.code || "RESTORE_PROJECT_FAILED",
         message: error.message,
       });
     }
-
+    logger.error("[Project Controller] Lỗi khi khôi phục dự án:", error);
     return res.code(500).send({
       success: false,
       code: "INTERNAL_SERVER_ERROR",
-      message: "Lỗi hệ thống khi khôi phục dự án",
-      error: error.message,
+      message: error.message || "Có lỗi xảy ra ở server khi khôi phục dự án",
     });
   }
 };
@@ -543,6 +556,14 @@ export const activateProject = async (req, res) => {
         success: false,
         code: "PROJECT_NOT_FOUND_OR_ACCESS_DENIED",
         message: "Không tìm thấy dự án hoặc bạn không có quyền",
+      });
+    }
+
+    if (project.status === "DELETED") {
+      return res.code(400).send({
+        success: false,
+        code: "PROJECT_ALREADY_DELETED",
+        message: "Không thể kích hoạt dự án đã bị xóa",
       });
     }
 
