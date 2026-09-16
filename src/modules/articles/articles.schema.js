@@ -39,6 +39,12 @@ export const getArticlesSchema = {
   }
 };
 
+export const getArticleFilterOptionsSchema = {
+  tags: ['Articles'],
+  summary: 'Lấy các tùy chọn bộ lọc cho bài báo (năm thực tế, top journals, top topics)',
+  description: 'Trả về danh sách các năm xuất bản thực tế từ cơ sở dữ liệu và top tạp chí, chủ đề phổ biến để phục vụ bộ lọc bài báo.',
+};
+
 export const getArticleByIdSchema = {
   tags: ['Articles'],
   summary: 'Lấy chi tiết bài báo theo ID',
