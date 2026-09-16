@@ -18,7 +18,12 @@ export default async function authRoutes(fastify, options) {
 
   fastify.get('/verify', { schema: { tags: ['Auth'] } }, verifyAccount);
   
-  fastify.get('/refresh', { schema: { tags: ['Auth'] } }, refreshToken);
+  fastify.route({
+    method: ['GET', 'POST'],
+    url: '/refresh',
+    schema: { tags: ['Auth'] },
+    handler: refreshToken
+  });
   
   fastify.get('/check-auth', { preHandler: [verifyTokenFastify], schema: { tags: ['Auth'] } }, checkAuth);
   
