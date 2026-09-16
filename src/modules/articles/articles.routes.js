@@ -1,5 +1,6 @@
 import { 
   getArticle, 
+  getArticleFilterOptions,
   getArticleById, 
   createArticle, 
   updateArticle, 
@@ -9,6 +10,7 @@ import {
 import { verifyTokenFastify } from '../auth/auth.middleware.js';
 import { 
   getArticlesSchema, 
+  getArticleFilterOptionsSchema,
   getArticleByIdSchema, 
   createArticleSchema, 
   updateArticleSchema, 
@@ -35,6 +37,8 @@ export default async function articlesRoutes(fastify, options) {
       }
     }
   }, getArticle);
+
+  fastify.get('/filter-options', { schema: getArticleFilterOptionsSchema }, getArticleFilterOptions);
 
   fastify.get('/:id', { schema: getArticleByIdSchema }, getArticleById);
 
