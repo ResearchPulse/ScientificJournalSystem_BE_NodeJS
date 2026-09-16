@@ -174,7 +174,8 @@ export const getAllKeywordsController = async (request, reply) => {
     const page = Math.max(parseInt(request.query.page) || 1, 1);
     const limit = Math.min(parseInt(request.query.limit) || 10, 100);
     const search = request.query.search || request.query.keyword || "";
-    const result = await keywordService.getAllKeywords({ page, limit, search });
+    const subject_area_id = request.query.subject_area_id ? parseInt(request.query.subject_area_id, 10) : undefined;
+    const result = await keywordService.getAllKeywords({ page, limit, search, subject_area_id });
     
     return reply.code(200).send({
       success: true,
