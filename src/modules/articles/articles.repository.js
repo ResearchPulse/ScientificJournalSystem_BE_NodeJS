@@ -263,6 +263,78 @@ export const getArticleListStats = async () => {
 };
 
 /**
+ * Lấy danh sách metadata cho bộ lọc bài báo: các năm có trong DB, top journals và top topics.
+ */
+export const getArticleFilterMetadata = async () => {
+    try {
+        const cacheKey = 'article:filter:metadata';
+        const cachedData = await cacheService.get(cacheKey);
+        if (cachedData) return cachedData;
+
+        const yearsPromise = pool.query(`
+            SELECT DISTINCT a."publication_year" AS year
+            FROM "Article" a
+            WHERE a."is_deleted" = false AND a."publication_year" IS NOT NULL
+            ORDER BY a."publication_year" DESC;
+        `);
+
+        const topJournalsPromise = pool.query(`
+            SELECT 
+                j."journal_id"::text AS journal_id, 
+                j."display_name", 
+                COUNT(a."article_id") AS article_count
+            FROM "Article" a
+            JOIN "Issue" i ON i."issue_id" = a."issue_id" AND (i."is_deleted" = false OR i."is_deleted" IS NULL)
+            JOIN "Volume" v ON v."volume_id" = i."volume_id" AND (v."is_deleted" = false OR v."is_deleted" IS NULL)
+            JOIN "Journal" j ON j."journal_id" = v."journal_id" AND (j."is_deleted" = false OR j."is_deleted" IS NULL)
+            WHERE a."is_deleted" = false
+            GROUP BY j."journal_id", j."display_name"
+            ORDER BY article_count DESC
+            LIMIT 50;
+        `);
+
+        const topTopicsPromise = pool.query(`
+            SELECT 
+                t."topic_id"::text AS topic_id, 
+                t."display_name", 
+                COUNT(a."article_id") AS article_count
+            FROM "Article" a
+            JOIN "Topic" t ON t."topic_id" = a."primary_topic" AND (t."is_deleted" = false OR t."is_deleted" IS NULL)
+            WHERE a."is_deleted" = false
+            GROUP BY t."topic_id", t."display_name"
+            ORDER BY article_count DESC
+            LIMIT 50;
+        `);
+
+        const [yearsRes, journalsRes, topicsRes] = await Promise.all([
+            yearsPromise,
+            topJournalsPromise,
+            topTopicsPromise
+        ]);
+
+        const data = {
+            years: yearsRes.rows.map((r) => r.year),
+            journals: journalsRes.rows.map((r) => ({
+                journal_id: r.journal_id,
+                display_name: r.display_name,
+                article_count: parseInt(r.article_count, 10),
+            })),
+            topics: topicsRes.rows.map((r) => ({
+                topic_id: r.topic_id,
+                display_name: r.display_name,
+                article_count: parseInt(r.article_count, 10),
+            })),
+        };
+
+        await cacheService.set(cacheKey, data, 3600);
+        return data;
+    } catch (error) {
+        logger.error('Lỗi khi lấy article filter metadata:', error);
+        throw error;
+    }
+};
+
+/**
  * Lấy danh sách bài báo công khai cho Article List Page.
  * Hỗ trợ search, filter, sort và JOIN metadata từ Issue → Volume → Journal → Topic.
  *
@@ -396,8 +468,9 @@ export const getAllArticles = async (firstParam = {}, offsetParam = 0, sortByPar
         if (needsVolume) innerJoins.push(`LEFT JOIN "Volume" v ON v."volume_id" = i."volume_id" AND (v."is_deleted" = false OR v."is_deleted" IS NULL)`);
         if (needsJournal) innerJoins.push(`LEFT JOIN "Journal" j ON j."journal_id" = v."journal_id" AND (j."is_deleted" = false OR j."is_deleted" IS NULL)`);
 
-        const innerOrderBy = `${column} ${order}, a."article_id" DESC`;
-        const outerOrderBy = `${column.replace('a.', 'ap.')} ${order}, ap."article_id" DESC`;
+        const nullsClause = sortBy === 'publication_year' && order === 'DESC' ? ' NULLS LAST' : '';
+        const innerOrderBy = `${column} ${order}${nullsClause}, a."article_id" DESC`;
+        const outerOrderBy = `${column.replace('a.', 'ap.')} ${order}${nullsClause}, ap."article_id" DESC`;
 
         const query = `
             WITH article_page AS (

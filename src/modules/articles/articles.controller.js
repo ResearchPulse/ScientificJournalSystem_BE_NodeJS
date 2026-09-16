@@ -106,11 +106,14 @@ export const getArticles = async (request, reply) => {
       countryId: request.query.country_id || request.query.country,
     };
 
-    if (serviceParams.isOpenAccess === "all" || serviceParams.isOpenAccess === "") {
+    if (serviceParams.isOpenAccess === "all" || serviceParams.isOpenAccess === "" || serviceParams.isOpenAccess === undefined) {
       serviceParams.isOpenAccess = undefined;
-    }
-    if (serviceParams.isOpenAccess === "oa") {
+    } else if (serviceParams.isOpenAccess === "oa" || serviceParams.isOpenAccess === "true" || serviceParams.isOpenAccess === true) {
       serviceParams.isOpenAccess = true;
+    } else if (serviceParams.isOpenAccess === "closed" || serviceParams.isOpenAccess === "non-oa" || serviceParams.isOpenAccess === "false" || serviceParams.isOpenAccess === false) {
+      serviceParams.isOpenAccess = false;
+    } else {
+      serviceParams.isOpenAccess = undefined;
     }
 
     const cacheKey = `api:articles:get:${crypto.createHash('md5').update(JSON.stringify({ ...serviceParams, page })).digest('hex')}`;
@@ -170,6 +173,28 @@ export const getArticle = async (request, reply) => {
     return getArticles(request, reply);
   } else {
     return getArticlesByKeywords(request, reply);
+  }
+};
+
+/**
+ * Lấy các tùy chọn bộ lọc cho bài báo (năm thực tế, top journals, top topics).
+ */
+export const getArticleFilterOptions = async (request, reply) => {
+  try {
+    const filterOptions = await articleService.getArticleFilterMetadata();
+    return reply.code(200).send({
+      success: true,
+      code: "ARTICLE_FILTER_OPTIONS_SUCCESS",
+      message: "Lấy tùy chọn bộ lọc bài báo thành công!",
+      data: filterOptions,
+    });
+  } catch (error) {
+    logger.error("Lỗi khi lấy filter options bài báo:", error);
+    return reply.code(500).send({
+      success: false,
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Có lỗi xảy ra ở Server!",
+    });
   }
 };
 
