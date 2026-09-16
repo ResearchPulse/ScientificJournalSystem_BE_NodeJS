@@ -55,6 +55,8 @@ export const createProjectSchema = {
         subject_area: { type: "integer", minimum: 1 },
         subject_category_ids: { type: "array", items: { type: "integer" } },
         journal_ids: { type: "array", items: { type: "integer" } },
+        keywords: { type: "array", items: { type: "string" } },
+        keyword_ids: { type: "array", items: { type: "integer" } },
       },
     },
   },
