@@ -84,8 +84,10 @@ export const getAuthorLeaderboard = async (request, reply) => {
   try {
     const limit = Number(request.query.limit) || 10;
     const page = Number(request.query.page) || 1;
+    const subject_area = request.query.subject_area || "";
+    const period = request.query.period || "all";
 
-    const result = await authorService.getAuthorLeaderboardService(limit, page);
+    const result = await authorService.getAuthorLeaderboardService(limit, page, subject_area, period);
 
     return reply.code(200).send({
       success: true,
@@ -110,12 +112,16 @@ export const getAllAuthorsController = async (request, reply) => {
     const limit = request.query.limit || 10;
     const search = request.query.search || "";
     const sort = request.query.sort || "impact";
+    const subject_area = request.query.subject_area || request.query.subject_area_id || "";
+    const country = request.query.country || "";
 
     const result = await authorService.getAllAuthors({
       page,
       limit,
       search,
       sort,
+      subject_area,
+      country,
     });
 
     return reply.code(200).send({
