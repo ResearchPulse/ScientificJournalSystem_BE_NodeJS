@@ -292,7 +292,7 @@ const validateIdsExist = async (ids, tableName, idColumnName) => {
  * @returns {Promise<Object>} Trả về thông tin cơ bản của project vừa được tạo
  * @throws {Error} Ném lỗi nếu Subject Area, Subject Category hoặc Journal không tồn tại
  */
-export const createProject = async ({ userId, title, subject_area, subject_category_ids = [], journal_ids = [] }) => {
+export const createProject = async ({ userId, title, subject_area, subject_category_ids = [], journal_ids = [], keywords = [], keyword_ids = [] }) => {
   // 1. Kiểm tra sự tồn tại của subject_area
   if (subject_area) {
     const areaCheck = await pool.query(
@@ -352,6 +352,51 @@ export const createProject = async ({ userId, title, subject_area, subject_categ
         `INSERT INTO "Project_Journal" (project_id, journal_id) 
          SELECT $1, unnest($2::bigint[])`,
         [projectId, uniqueJournalIds]
+      );
+    }
+
+    // Thêm các từ khóa theo dõi vào bảng Project_Keyword nếu có
+    const allKeywordIds = [];
+    if (Array.isArray(keyword_ids) && keyword_ids.length > 0) {
+      allKeywordIds.push(...keyword_ids.map(id => parseInt(id, 10)).filter(id => !isNaN(id)));
+    }
+
+    if (Array.isArray(keywords) && keywords.length > 0) {
+      const stringNames = [];
+      for (const kw of keywords) {
+        if (typeof kw === 'number') {
+          allKeywordIds.push(kw);
+        } else if (typeof kw === 'string' && kw.trim()) {
+          if (/^\d+$/.test(kw.trim())) {
+            allKeywordIds.push(parseInt(kw.trim(), 10));
+          } else {
+            stringNames.push(kw.trim());
+          }
+        }
+      }
+
+      if (stringNames.length > 0) {
+        const uniqueNames = [...new Set(stringNames)];
+        const upsertQuery = `
+          INSERT INTO "Keyword" (display_name)
+          SELECT unnest($1::text[])
+          ON CONFLICT (display_name) DO UPDATE SET display_name = EXCLUDED.display_name
+          RETURNING keyword_id, display_name;
+        `;
+        const kwResult = await client.query(upsertQuery, [uniqueNames]);
+        for (const row of kwResult.rows) {
+          allKeywordIds.push(Number(row.keyword_id));
+        }
+      }
+    }
+
+    const uniqueKeywordIds = [...new Set(allKeywordIds)];
+    if (uniqueKeywordIds.length > 0) {
+      await client.query(
+        `INSERT INTO "Project_Keyword" (project_id, keyword_id) 
+         SELECT $1, unnest($2::bigint[]) 
+         ON CONFLICT DO NOTHING`,
+        [projectId, uniqueKeywordIds]
       );
     }
 

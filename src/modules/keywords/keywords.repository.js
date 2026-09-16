@@ -482,10 +482,64 @@ export const getKeywordById = async (id) => {
   return rows[0];
 };
 
-export const getAllKeywords = async ({ page = 1, limit = 10, search = "" }) => {
+export const getAllKeywords = async ({ page = 1, limit = 10, search = "", subject_area_id }) => {
   const offset = (page - 1) * limit;
   const normalizedSearch = search.trim();
   const searchPattern = `%${normalizedSearch}%`;
+
+  const parsedAreaId = subject_area_id ? parseInt(subject_area_id, 10) : null;
+
+  if (parsedAreaId && !isNaN(parsedAreaId)) {
+    const cacheKey = `keywords:area:${parsedAreaId}:${page}:${limit}:${normalizedSearch}`;
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) return cachedData;
+
+    const countQuery = `
+      SELECT COUNT(DISTINCT k.keyword_id) AS total
+      FROM "Keyword" k
+      JOIN "Keyword_Article" ka ON ka.keyword_id = k.keyword_id
+      JOIN "Article" a ON a.article_id = ka.article_id AND COALESCE(a.is_deleted, false) = false
+      JOIN "Issue" i ON i.issue_id = a.issue_id
+      JOIN "Volume" v ON v.volume_id = i.volume_id
+      JOIN "Journal_Subject_Category" jsc ON jsc.journal_id = v.journal_id
+      JOIN "Subject_Category" sc ON sc.subject_category_id = jsc.subject_category_id
+      WHERE sc.subject_area_id = $1
+        AND ($2 = '' OR LOWER(k.display_name) LIKE LOWER($3))
+    `;
+
+    const dataQuery = `
+      SELECT 
+        k.keyword_id, 
+        k.display_name,
+        COUNT(ka.article_id) AS article_count
+      FROM "Keyword" k
+      JOIN "Keyword_Article" ka ON ka.keyword_id = k.keyword_id
+      JOIN "Article" a ON a.article_id = ka.article_id AND COALESCE(a.is_deleted, false) = false
+      JOIN "Issue" i ON i.issue_id = a.issue_id
+      JOIN "Volume" v ON v.volume_id = i.volume_id
+      JOIN "Journal_Subject_Category" jsc ON jsc.journal_id = v.journal_id
+      JOIN "Subject_Category" sc ON sc.subject_category_id = jsc.subject_category_id
+      WHERE sc.subject_area_id = $1
+        AND ($2 = '' OR LOWER(k.display_name) LIKE LOWER($3))
+      GROUP BY k.keyword_id, k.display_name
+      ORDER BY article_count DESC, k.display_name ASC
+      LIMIT $4 OFFSET $5
+    `;
+
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(countQuery, [parsedAreaId, normalizedSearch, searchPattern]),
+      pool.query(dataQuery, [parsedAreaId, normalizedSearch, searchPattern, limit, offset]),
+    ]);
+
+    const total = parseInt(countResult.rows[0]?.total || 0, 10);
+    const result = {
+      data: dataResult.rows,
+      pagination: { page, limit, total, total_pages: Math.max(1, Math.ceil(total / limit)) },
+    };
+
+    await cacheService.set(cacheKey, result, 300);
+    return result;
+  }
 
   const countQuery = `
     SELECT COUNT(*) AS total FROM "Keyword"

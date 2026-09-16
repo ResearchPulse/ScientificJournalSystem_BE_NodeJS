@@ -100,6 +100,8 @@ export const createProject = async (req, res) => {
       subject_area_id,
       subject_category_ids = [],
       journal_ids = [],
+      keywords = [],
+      keyword_ids = [],
     } = req.body;
 
     // Hỗ trợ cả hai cách đặt tên trường
@@ -112,6 +114,8 @@ export const createProject = async (req, res) => {
       subject_area: finalSubjectArea,
       subject_category_ids,
       journal_ids,
+      keywords,
+      keyword_ids,
     });
 
     createLog({
