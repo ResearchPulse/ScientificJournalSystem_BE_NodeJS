@@ -1,14 +1,28 @@
-import { loginUser, registerUser, verifyUserEmail, requestPasswordReset, resetPassword as resetPasswordService, loginWithGoogle as loginWithGoogleService } from './auth.service.js';
+import { 
+  loginUser, 
+  registerUser, 
+  verifyUserEmail, 
+  requestPasswordReset, 
+  resetPassword as resetPasswordService, 
+  loginWithGoogle as loginWithGoogleService,
+  refreshTokenService
+} from './auth.service.js';
 
+const getCookieDomain = () => {
+  const domain = process.env.COOKIE_DOMAIN;
+  if (!domain || domain === 'localhost' || domain === '127.0.0.1') return undefined;
+  return domain;
+};
 
 export const login = async (request, reply) => {
   try {
     const { email, password, remember } = request.body;
     const { token, refreshToken, user } = await loginUser(email, password);
+    const domain = getCookieDomain();
 
     reply.setCookie('access_token', token, {
       path: '/',
-      domain: process.env.COOKIE_DOMAIN || undefined,
+      domain,
       httpOnly: true,
       secure: true,
       sameSite: 'none', // Cho phép cross-site request qua HTTPS
@@ -18,7 +32,7 @@ export const login = async (request, reply) => {
     if (remember) {
       reply.setCookie('refresh_token', refreshToken, {
         path: '/',
-        domain: process.env.COOKIE_DOMAIN || undefined,
+        domain,
         httpOnly: true,
         secure: true,
         sameSite: 'none',
@@ -27,7 +41,7 @@ export const login = async (request, reply) => {
     } else {
       reply.setCookie('refresh_token', refreshToken, {
         path: '/',
-        domain: process.env.COOKIE_DOMAIN || undefined,
+        domain,
         httpOnly: true,
         secure: true,
         sameSite: 'none'
@@ -41,6 +55,7 @@ export const login = async (request, reply) => {
       data: {
         token,
         refresh_token: refreshToken,
+        remember: Boolean(remember),
         user: {
           user_id: user.user_id,
           email: user.email,
@@ -103,13 +118,72 @@ export const verifyAccount = async (request, reply) => {
 };
 
 export const refreshToken = async (request, reply) => {
-  // Logic refresh token placeholder
-  return reply.send({ success: false, message: 'Chưa implement' });
+  try {
+    const tokenFromCookie = request.cookies?.refresh_token;
+    const tokenFromHeader = request.headers['x-refresh-token'];
+    const tokenFromBody = request.body?.refresh_token;
+    const tokenFromQuery = request.query?.refresh_token;
+    const incomingRefreshToken = tokenFromCookie || tokenFromHeader || tokenFromBody || tokenFromQuery;
+
+    if (!incomingRefreshToken) {
+      return reply.code(401).send({
+        success: false,
+        code: 'REFRESH_TOKEN_MISSING',
+        message: 'Không tìm thấy refresh token'
+      });
+    }
+
+    const { token, refreshToken: newRefreshToken, user } = await refreshTokenService(incomingRefreshToken);
+    const domain = getCookieDomain();
+
+    reply.setCookie('access_token', token, {
+      path: '/',
+      domain,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: parseInt(process.env.COOKIE_ACCESS_MAX_AGE || 3600000, 10) / 1000
+    });
+
+    reply.setCookie('refresh_token', newRefreshToken, {
+      path: '/',
+      domain,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: parseInt(process.env.COOKIE_REFRESH_MAX_AGE || 2592000000, 10) / 1000
+    });
+
+    return reply.send({
+      success: true,
+      message: 'Cấp lại access token thành công',
+      data: {
+        token,
+        refresh_token: newRefreshToken,
+        user: {
+          user_id: user.user_id,
+          email: user.email,
+          role: user.role,
+          status: user.status
+        }
+      }
+    });
+  } catch (error) {
+    const domain = getCookieDomain();
+    reply.clearCookie('access_token', { domain, path: '/', secure: true, sameSite: 'none' });
+    reply.clearCookie('refresh_token', { domain, path: '/', secure: true, sameSite: 'none' });
+    return reply.code(401).send({
+      success: false,
+      code: 'REFRESH_TOKEN_INVALID',
+      message: error.message || 'Refresh token không hợp lệ hoặc đã hết hạn'
+    });
+  }
 };
 
 export const logout = async (request, reply) => {
-  reply.clearCookie('access_token', { domain: process.env.COOKIE_DOMAIN || undefined, path: '/', secure: true, sameSite: 'none' });
-  reply.clearCookie('refresh_token', { domain: process.env.COOKIE_DOMAIN || undefined, path: '/', secure: true, sameSite: 'none' });
+  const domain = getCookieDomain();
+  reply.clearCookie('access_token', { domain, path: '/', secure: true, sameSite: 'none' });
+  reply.clearCookie('refresh_token', { domain, path: '/', secure: true, sameSite: 'none' });
   return reply.send({
     success: true,
     message: 'Đăng xuất thành công'
@@ -162,10 +236,10 @@ export const googleLogin = async (request, reply) => {
     const isProduction = process.env.NODE_ENV === 'production';
     const cookieOpts = {
       path: '/',
-      domain: process.env.COOKIE_DOMAIN || undefined,
+      domain: getCookieDomain(),
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'none' : 'lax',
+      secure: true,
+      sameSite: 'none',
     };
 
     reply.setCookie('access_token', token, {

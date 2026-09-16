@@ -299,4 +299,51 @@ export const loginWithGoogle = async (code) => {
   return { token, refreshToken, user, isNewUser };
 };
 
+/**
+ * Xác thực refresh token và cấp phát cặp access token / refresh token mới
+ * @param {string} refreshToken 
+ * @returns {Promise<{ token: string, refreshToken: string, user: object }>}
+ */
+export const refreshTokenService = async (refreshToken) => {
+  if (!refreshToken) {
+    const error = new Error('Refresh token không tồn tại');
+    error.statusCode = 401;
+    throw error;
+  }
 
+  let decoded;
+  try {
+    decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'secret_refresh');
+  } catch (err) {
+    const error = new Error('Refresh token không hợp lệ hoặc đã hết hạn');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const user = await findUserById(decoded.user_id);
+  if (!user) {
+    const error = new Error('Người dùng không tồn tại');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (user.status !== 'ACTIVE') {
+    const error = new Error('Tài khoản đã bị khóa hoặc chưa được kích hoạt');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const token = jwt.sign(
+    { user_id: user.user_id, role: user.role, email: user.email },
+    process.env.JWT_SECRET || 'secret',
+    { expiresIn: process.env.JWT_EXPIRES_IN || '1h' }
+  );
+
+  const newRefreshToken = jwt.sign(
+    { user_id: user.user_id },
+    process.env.JWT_REFRESH_SECRET || 'secret_refresh',
+    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' }
+  );
+
+  return { token, refreshToken: newRefreshToken, user };
+};
