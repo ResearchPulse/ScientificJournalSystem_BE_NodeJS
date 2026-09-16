@@ -45,6 +45,8 @@ export const getAuthorLeaderboardSchema = {
       properties: {
         limit: { type: "integer", minimum: 1, default: 10 },
         page: { type: "integer", minimum: 1, default: 1 },
+        subject_area: { type: "string" },
+        period: { type: "string" },
       },
     },
   },
@@ -61,6 +63,9 @@ export const getAllAuthorsSchema = {
         limit: { type: "integer", minimum: 1, maximum: 100, default: 10 },
         search: { type: "string" },
         sort: { type: "string" },
+        subject_area: { type: "string" },
+        subject_area_id: { type: "string" },
+        country: { type: "string" },
       },
     },
   },
